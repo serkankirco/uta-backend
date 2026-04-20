@@ -1,0 +1,482 @@
+// UTA - Ulusal Tedarik Agi
+// Prisma Schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────
+
+enum CompanyStatus {
+  PENDING    // Onay bekliyor
+  APPROVED   // Onaylandı
+  REJECTED   // Reddedildi
+  SUSPENDED  // Askıya alındı
+}
+
+enum MembershipPlan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum PostStatus {
+  ACTIVE
+  CLOSED
+  CANCELLED
+  COMPLETED
+}
+
+enum PostVisibility {
+  PUBLIC   // Tüm ağa açık
+  PRIVATE  // Sadece davet edilenler
+}
+
+enum BidStatus {
+  PENDING        // Teklif verildi, yanıt bekleniyor
+  COUNTER_OFFER  // Karşı teklif yapıldı
+  ACCEPTED       // Kabul edildi
+  REJECTED       // Reddedildi
+  WITHDRAWN      // Geri çekildi
+}
+
+enum OrderStatus {
+  CREATED     // Oluşturuldu
+  CONFIRMED   // Tedarikçi onayladı
+  IN_PROGRESS // Üretim/hazırlık aşamasında
+  SHIPPED     // Kargoya verildi
+  DELIVERED   // Teslim edildi
+  DISPUTED    // İtiraz var
+  COMPLETED   // Tamamlandı
+  CANCELLED   // İptal edildi
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  CLOSED
+}
+
+enum DocumentType {
+  TAX_CERTIFICATE      // Vergi Levhası
+  TRADE_REGISTRY       // Ticaret Sicil Gazetesi
+  ISO_CERTIFICATE      // ISO Belgesi
+  CAPACITY_REPORT      // Kapasite Raporu
+  OTHER
+}
+
+enum NotificationType {
+  NEW_BID
+  BID_ACCEPTED
+  BID_REJECTED
+  COUNTER_OFFER
+  ORDER_CREATED
+  ORDER_STATUS_CHANGED
+  COMPANY_APPROVED
+  COMPANY_REJECTED
+  NEW_MESSAGE
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
+}
+
+enum AuditAction {
+  COMPANY_CREATED
+  COMPANY_APPROVED
+  COMPANY_REJECTED
+  COMPANY_SUSPENDED
+  POST_CREATED
+  POST_CLOSED
+  BID_CREATED
+  BID_ACCEPTED
+  BID_REJECTED
+  ORDER_CREATED
+  ORDER_STATUS_CHANGED
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
+  USER_LOGIN
+  USER_LOGOUT
+  DOCUMENT_UPLOADED
+}
+
+// ─────────────────────────────────────────
+// KULLANICI & ŞİRKET
+// ─────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  phone        String?
+  isAdmin      Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  company      Company?
+  refreshTokens RefreshToken[]
+  sentMessages  Message[] @relation("SentMessages")
+  notifications Notification[]
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+model Company {
+  id             String         @id @default(uuid())
+  userId         String         @unique
+  name           String
+  taxNumber      String         @unique  // Vergi numarası
+  taxOffice      String?
+  sector         String
+  city           String
+  address        String?
+  website        String?
+  description    String?
+  employeeCount  Int?
+  foundedYear    Int?
+  status         CompanyStatus  @default(PENDING)
+  membershipPlan MembershipPlan @default(FREE)
+  planExpiresAt  DateTime?
+  rejectionNote  String?        // Admin red gerekçesi
+  approvedAt     DateTime?
+  approvedBy     String?        // Admin userId
+  isFeatured     Boolean        @default(false)  // Premium üst sıralama
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents   Document[]
+  posts       Post[]
+  bids        Bid[]
+  ordersAsBuyer    Order[] @relation("BuyerOrders")
+  ordersAsSupplier Order[] @relation("SupplierOrders")
+  ratingsGiven     Rating[] @relation("RatingsGiven")
+  ratingsReceived  Rating[] @relation("RatingsReceived")
+  conversations    ConversationParticipant[]
+
+  @@map("companies")
+}
+
+model Document {
+  id           String       @id @default(uuid())
+  companyId    String
+  type         DocumentType
+  filename     String
+  storagePath  String       // S3 / MinIO path
+  mimeType     String
+  sizeBytes    Int
+  isVerified   Boolean      @default(false)
+  expiresAt    DateTime?    // Belge geçerlilik tarihi
+  uploadedAt   DateTime     @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("documents")
+}
+
+// ─────────────────────────────────────────
+// İLAN (POST)
+// ─────────────────────────────────────────
+
+model Post {
+  id            String         @id @default(uuid())
+  companyId     String
+  title         String
+  description   String
+  sector        String
+  category      String
+  quantity      Float?
+  unit          String?        // adet, kg, ton, m² ...
+  budgetMin     Decimal?       @db.Decimal(14, 2)
+  budgetMax     Decimal?       @db.Decimal(14, 2)
+  currency      String         @default("TRY")
+  deliveryCity  String?
+  deliveryDate  DateTime?
+  status        PostStatus     @default(ACTIVE)
+  visibility    PostVisibility @default(PUBLIC)
+  viewCount     Int            @default(0)
+  closedAt      DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  company  Company  @relation(fields: [companyId], references: [id])
+  bids     Bid[]
+  tags     PostTag[]
+
+  @@index([sector, status])
+  @@index([companyId])
+  @@index([createdAt(sort: Desc)])
+  @@map("posts")
+}
+
+model PostTag {
+  postId String
+  tag    String
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@id([postId, tag])
+  @@map("post_tags")
+}
+
+// ─────────────────────────────────────────
+// TEKLİF (BID)
+// ─────────────────────────────────────────
+
+model Bid {
+  id             String    @id @default(uuid())
+  postId         String
+  companyId      String    // Teklif veren
+  parentBidId    String?   // Karşı teklif zinciri
+  unitPrice      Decimal   @db.Decimal(14, 2)
+  quantity       Float?
+  totalPrice     Decimal   @db.Decimal(14, 2)
+  currency       String    @default("TRY")
+  deliveryDays   Int       // Teslimat süresi (gün)
+  validUntil     DateTime  // Teklif geçerlilik tarihi
+  note           String?
+  status         BidStatus @default(PENDING)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  post      Post     @relation(fields: [postId], references: [id])
+  company   Company  @relation(fields: [companyId], references: [id])
+  parentBid Bid?     @relation("BidCounterOffers", fields: [parentBidId], references: [id])
+  counterOffers Bid[] @relation("BidCounterOffers")
+  order     Order?
+
+  @@index([postId, status])
+  @@index([companyId])
+  @@map("bids")
+}
+
+// ─────────────────────────────────────────
+// SİPARİŞ (ORDER)
+// ─────────────────────────────────────────
+
+model Order {
+  id           String      @id @default(uuid())
+  bidId        String      @unique
+  buyerCompanyId    String
+  supplierCompanyId String
+  totalAmount  Decimal     @db.Decimal(14, 2)
+  currency     String      @default("TRY")
+  status       OrderStatus @default(CREATED)
+  deliveryDate DateTime?
+  deliveredAt  DateTime?
+  completedAt  DateTime?
+  cancelledAt  DateTime?
+  cancelReason String?
+  notes        String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  bid            Bid      @relation(fields: [bidId], references: [id])
+  buyerCompany   Company  @relation("BuyerOrders", fields: [buyerCompanyId], references: [id])
+  supplierCompany Company @relation("SupplierOrders", fields: [supplierCompanyId], references: [id])
+  statusHistory  OrderStatusHistory[]
+  dispute        Dispute?
+  rating         Rating?
+
+  @@index([buyerCompanyId])
+  @@index([supplierCompanyId])
+  @@map("orders")
+}
+
+model OrderStatusHistory {
+  id        String      @id @default(uuid())
+  orderId   String
+  status    OrderStatus
+  note      String?
+  changedAt DateTime    @default(now())
+  changedBy String?     // userId
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("order_status_history")
+}
+
+// ─────────────────────────────────────────
+// İTİRAZ (DISPUTE)
+// ─────────────────────────────────────────
+
+model Dispute {
+  id          String        @id @default(uuid())
+  orderId     String        @unique
+  openedBy    String        // companyId
+  reason      String
+  description String
+  status      DisputeStatus @default(OPEN)
+  resolution  String?
+  resolvedBy  String?       // admin userId
+  resolvedAt  DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@map("disputes")
+}
+
+// ─────────────────────────────────────────
+// DEĞERLENDİRME (RATING)
+// ─────────────────────────────────────────
+
+model Rating {
+  id            String   @id @default(uuid())
+  orderId       String   @unique
+  fromCompanyId String
+  toCompanyId   String
+  score         Int      // 1-5
+  comment       String?
+  createdAt     DateTime @default(now())
+
+  order       Order   @relation(fields: [orderId], references: [id])
+  fromCompany Company @relation("RatingsGiven", fields: [fromCompanyId], references: [id])
+  toCompany   Company @relation("RatingsReceived", fields: [toCompanyId], references: [id])
+
+  @@map("ratings")
+}
+
+// ─────────────────────────────────────────
+// MESAJLAŞMA
+// ─────────────────────────────────────────
+
+model Conversation {
+  id        String   @id @default(uuid())
+  subject   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  participants ConversationParticipant[]
+  messages     Message[]
+
+  @@map("conversations")
+}
+
+model ConversationParticipant {
+  conversationId String
+  companyId      String
+  joinedAt       DateTime @default(now())
+  lastReadAt     DateTime?
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  company      Company      @relation(fields: [companyId], references: [id])
+
+  @@id([conversationId, companyId])
+  @@map("conversation_participants")
+}
+
+model Message {
+  id             String   @id @default(uuid())
+  conversationId String
+  senderUserId   String
+  body           String
+  isRead         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User         @relation("SentMessages", fields: [senderUserId], references: [id])
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+// ─────────────────────────────────────────
+// BİLDİRİM
+// ─────────────────────────────────────────
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?            // İlgili entity id'leri vb.
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+// ─────────────────────────────────────────
+// DENETİM LOGU (AUDIT)
+// ─────────────────────────────────────────
+
+model AuditLog {
+  id         String      @id @default(uuid())
+  userId     String?
+  action     AuditAction
+  entityType String      // "Company", "Post", "Bid", "Order" ...
+  entityId   String
+  metadata   Json?       // Değişen alanlar, eski/yeni değerler
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime    @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────
+// YÖNETİM
+// ─────────────────────────────────────────
+
+model Sector {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@map("sectors")
+}
+
+model MembershipPlanConfig {
+  id               String         @id @default(uuid())
+  plan             MembershipPlan @unique
+  price            Decimal        @db.Decimal(10, 2)
+  currency         String         @default("TRY")
+  durationDays     Int
+  maxActivePosts   Int            // -1 = sınırsız
+  maxBidsPerMonth  Int            // -1 = sınırsız
+  isFeatured       Boolean        @default(false)
+  features         Json           // özellikler listesi
+  isActive         Boolean        @default(true)
+  updatedAt        DateTime       @updatedAt
+
+  @@map("membership_plan_configs")
+}
