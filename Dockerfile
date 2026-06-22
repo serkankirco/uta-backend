@@ -6,7 +6,7 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --frozen-lockfile
+RUN npm install
 
 COPY . .
 RUN npx prisma generate
@@ -24,7 +24,7 @@ WORKDIR /app
 
 # Sadece production bağımlılıkları
 COPY package*.json ./
-RUN npm ci --frozen-lockfile --only=production && npm cache clean --force
+RUN npm install --omit=dev && npm cache clean --force
 
 # Build output
 COPY --from=builder /app/dist ./dist
