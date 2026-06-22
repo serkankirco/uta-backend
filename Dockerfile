@@ -20,6 +20,8 @@ FROM node:20-alpine AS production
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nestjs -u 1001
 
+RUN apk add --no-cache openssl
+
 WORKDIR /app
 
 # Sadece production bağımlılıkları
@@ -27,9 +29,9 @@ COPY package*.json ./
 RUN npm install --omit=dev && npm cache clean --force
 
 # Build output
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+COPY --from=builder --chown=nestjs:nodejs /app/dist ./dist
+COPY --from=builder --chown=nestjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder --chown=nestjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
 COPY prisma ./prisma
 
 USER nestjs
